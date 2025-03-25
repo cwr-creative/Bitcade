@@ -56,7 +56,7 @@ def check_for_payment(payment_address):
         for tx in transactions:
             for output in tx.get("vout", []):
                 if "scriptpubkey_address" in output and output["scriptpubkey_address"] == payment_address:
-                    btc_amount = output["value"] / 1e8  # Convert satoshis to BTC
+                    btc_amount = output["value"]  # Removed Satoshi conversion
                     print(f"✅ Payment detected! TxID: {tx['txid']}, Amount: {btc_amount} BTC")
                     return btc_amount
 
