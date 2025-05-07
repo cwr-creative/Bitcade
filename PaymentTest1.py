@@ -4,7 +4,7 @@ import qrcode
 import json
 import threading
 import keyboard
-import pyautogui
+from pynput.keyboard import Controller
 import os
 from bitcoinlib.keys import HDKey
 
@@ -18,10 +18,11 @@ INSERT_BUTTON = "v"
 MAME_COIN_BUTTON = "c"
 SAVE_INTERVAL = 10  # seconds between saving credits.json
 
-# Shared credits variable
 credits_lock = threading.Lock()
 credits = 0
+keyboard_controller = Controller()
 
+# Load/save credits
 def load_credits():
     global credits
     if os.path.exists(CREDITS_FILE):
@@ -41,7 +42,7 @@ def periodic_saver():
         save_credits()
         time.sleep(SAVE_INTERVAL)
 
-# Payment processor code (intact, with small changes to integrate)
+# Payment processor logic
 def derive_address_from_xpub(xpub):
     index = int(time.time())
     hdkey = HDKey(xpub)
@@ -49,49 +50,21 @@ def derive_address_from_xpub(xpub):
     print(f"Derived address (index {index}): {new_address}")
     return new_address
 
-BTC_ADDRESS = derive_address_from_xpub(XPUB_KEY)
-
 def get_btc_price():
     response = requests.get(EXCHANGE_RATE_API)
     data = response.json()
     return data["bitcoin"]["usd"]
 
-def generate_payment_qr(amount_btc):
-    payment_uri = f"bitcoin:{BTC_ADDRESS}?amount={amount_btc}"
+def generate_payment_qr(amount_btc, address):
+    payment_uri = f"bitcoin:{address}?amount={amount_btc}"
     print(f"Payment URL: {payment_uri}")
     qr = qrcode.make(payment_uri)
     qr.show()
 
-def check_for_payment(payment_address):
-    MEMPOOL_API = f"https://mempool.space/testnet4/api/address/{payment_address}/txs/mempool"
-
-    try:
-        response = requests.get(MEMPOOL_API)
-        print(f"Response status code: {response.status_code}")
-        if response.status_code != 200:
-            print("Error: Failed to retrieve transactions from mempool API")
-            return None
-        
-        transactions = response.json()
-        print(f"Raw API Response: {json.dumps(transactions, indent=2)}")
-
-        for tx in transactions:
-            for output in tx.get("vout", []):
-                if "scriptpubkey_address" in output and output["scriptpubkey_address"] == payment_address:
-                    btc_amount = output["value"]
-                    print(f"✅ Payment detected! TxID: {tx['txid']}, Amount: {btc_amount} BTC")
-                    return btc_amount
-
-        print("No unconfirmed transactions found for this address.")
-    except Exception as e:
-        print(f"Error while checking mempool: {e}")
-    
-    return None
-
 def payment_processor():
     global credits
-    print("Arcade Machine is in Attract Mode. Press any key to purchase credits.")
-    input("Press Enter to continue...")
+
+    btc_address = derive_address_from_xpub(XPUB_KEY)
 
     btc_price = get_btc_price()
     cost_per_credit_btc = CREDIT_COST_USD / btc_price
@@ -100,15 +73,26 @@ def payment_processor():
 
     print(f"Total cost in BTC: {total_btc:.8f}")
     print("Generating payment QR code...")
-    generate_payment_qr(total_btc)
+    generate_payment_qr(total_btc, btc_address)
 
-    print("Waiting for payment...")
+    # ----- Test mode block -----
+    print("Test mode: Simulating payment received immediately!")
+    time.sleep(2)
+    with credits_lock:
+        credits += num_credits
+    save_credits()
+    print(f"Payment received (test mode)! Awarding {num_credits} credits!")
+    return
+    # ---------------------------
+
+    # Real mempool watch code is still here (commented for now)
+    """
     start_time = time.time()
+    MEMPOOL_API = f"https://mempool.space/testnet4/api/address/{btc_address}/txs/mempool"
 
     while time.time() - start_time < TIMEOUT_SECONDS:
-        received_btc = check_for_payment(BTC_ADDRESS)
+        received_btc = check_for_payment(btc_address)
         if received_btc and received_btc >= total_btc:
-            print(f"Payment received: {received_btc:.8f} BTC. Awarding {num_credits} credits!")
             with credits_lock:
                 credits += num_credits
             save_credits()
@@ -116,37 +100,51 @@ def payment_processor():
         time.sleep(2)
 
     print("Payment not detected. Returning to Attract Mode.")
+    """
 
-# Key watcher code
+# Key watcher daemon
 def key_watcher():
     global credits
-    print("Key watcher started, waiting for 'v' key...")
+    print("Key watcher running.")
 
     while True:
         if keyboard.is_pressed(INSERT_BUTTON):
             with credits_lock:
                 if credits > 0:
-                    pyautogui.press(MAME_COIN_BUTTON)
+                    keyboard_controller.press(MAME_COIN_BUTTON)
+                    keyboard_controller.release(MAME_COIN_BUTTON)
                     credits -= 1
-                    print(f"Inserted coin! Remaining credits: {credits}")
                     save_credits()
-                    time.sleep(0.5)  # Debounce
+                    print(f"Inserted coin! Remaining credits: {credits}")
                 else:
-                    print("No credits available!")
-                    time.sleep(0.5)
+                    print("No credits left! Insert payment.")
+            time.sleep(0.5)
         time.sleep(0.05)
 
 def main():
+    global credits
     load_credits()
 
-    # Start background threads
-    saver_thread = threading.Thread(target=periodic_saver, daemon=True)
-    key_thread = threading.Thread(target=key_watcher, daemon=True)
-    saver_thread.start()
-    key_thread.start()
+    # Start background saver + key watcher
+    threading.Thread(target=periodic_saver, daemon=True).start()
+    threading.Thread(target=key_watcher, daemon=True).start()
 
+    # Main loop: wait for "v" when credits == 0
     while True:
-        payment_processor()
+        with credits_lock:
+            current_credits = credits
+
+        if current_credits == 0:
+            print("No credits left. Waiting for player to press V to begin payment...")
+
+            # Wait until V is pressed
+            while not keyboard.is_pressed(INSERT_BUTTON):
+                time.sleep(0.1)
+
+            # Player pressed V → begin payment processor
+            payment_processor()
+
+        time.sleep(1)
 
 if __name__ == "__main__":
     main()
