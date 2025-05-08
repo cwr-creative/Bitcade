@@ -1,4 +1,5 @@
 import time
+import subprocess
 import requests
 import qrcode
 import json
@@ -36,6 +37,9 @@ def save_credits():
     with credits_lock:
         with open(CREDITS_FILE, "w") as f:
             json.dump({"credits": credits}, f)
+
+def send_coin():
+    subprocess.run(["xdotool", "key", "c"])
 
 def periodic_saver():
     while True:
@@ -120,8 +124,7 @@ def key_watcher():
 
             # Act outside the lock (this prevents blocking)
             if should_insert_coin:
-                keyboard_controller.press(MAME_COIN_BUTTON)
-                keyboard_controller.release(MAME_COIN_BUTTON)
+                send_coin()
                 save_credits()
                 print(f"Inserted coin! Remaining credits: {current_credits}")
             else:
