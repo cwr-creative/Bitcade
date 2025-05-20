@@ -16,7 +16,6 @@ EXCHANGE_RATE_API = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&v
 TIMEOUT_SECONDS = 200
 CREDITS_FILE = "credits.json"
 INSERT_BUTTON = "v"
-MAME_COIN_BUTTON = "c"
 SAVE_INTERVAL = 10  # seconds between saving credits.json
 
 credits_lock = threading.Lock()
@@ -45,6 +44,32 @@ def periodic_saver():
     while True:
         save_credits()
         time.sleep(SAVE_INTERVAL)
+
+# Launching Attract Mode and monitoring status
+mame_is_running = False
+
+def monitor_attract_stdout():
+    global mame_is_running
+
+    print("🧠 Starting Attract Mode monitor...")
+
+    process = subprocess.Popen(
+        ["attract"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+
+    for line in process.stdout:
+        print(f"[Attract] {line.strip()}")  # Optional live log
+
+        if "*** Running:" in line and "mame" in line:
+            print("🎮 MAME launched")
+            mame_is_running = True
+
+        elif "exit_game" in line or "Returned from" in line:
+            print("🏁 MAME exited")
+            mame_is_running = False
 
 # Payment processor logic
 def derive_address_from_xpub(xpub):
@@ -107,29 +132,30 @@ def payment_processor():
     """
 
 # Key watcher daemon
+from gamepad import VirtualGamepad  # Assuming the class above is saved in gamepad.py
+
+gamepad = VirtualGamepad()
+
 def key_watcher():
     global credits
     print("Key watcher running.")
 
     while True:
         if keyboard.is_pressed(INSERT_BUTTON):
-            # Check credits safely
             with credits_lock:
                 if credits > 0:
                     credits -= 1
-                    current_credits = credits  # copy value locally
+                    current_credits = credits
                     should_insert_coin = True
                 else:
                     should_insert_coin = False
 
-            # Act outside the lock (this prevents blocking)
             if should_insert_coin:
-                send_coin()
+                gamepad.insert_coin()
                 save_credits()
                 print(f"Inserted coin! Remaining credits: {current_credits}")
             else:
                 print("No credits left! Insert payment.")
-            
             time.sleep(0.5)
 
         time.sleep(0.05)
@@ -138,7 +164,10 @@ def main():
     global credits
     load_credits()
 
-    # Start background saver + key watcher
+    # Start Attract Mode and monitor
+    threading.Thread(target=monitor_attract_stdout, daemon=True).start()
+    
+    # Start background saver + key watcher as daemons
     threading.Thread(target=periodic_saver, daemon=True).start()
     threading.Thread(target=key_watcher, daemon=True).start()
 
