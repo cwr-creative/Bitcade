@@ -5,6 +5,6 @@ gamepad = VirtualGamepad()
 
 time.sleep(5.5)
 
-gamepad.insert_coin()
+gamepad.toggle_pause()
 
 print(f"button press complete")

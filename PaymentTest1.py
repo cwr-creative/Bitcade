@@ -4,7 +4,6 @@ import requests
 import qrcode
 import json
 import threading
-import keyboard
 from pynput.keyboard import Controller
 import os
 from bitcoinlib.keys import HDKey
@@ -18,7 +17,7 @@ CREDITS_FILE = "credits.json"
 INSERT_BUTTON = "v"
 SAVE_INTERVAL = 10  # seconds between saving credits.json
 
-credits_lock = threading.Lock()
+credits_lock = threading.RLock()
 credits = 0
 keyboard_controller = Controller()
 
@@ -36,9 +35,6 @@ def save_credits():
     with credits_lock:
         with open(CREDITS_FILE, "w") as f:
             json.dump({"credits": credits}, f)
-
-def send_coin():
-    subprocess.run(["xdotool", "key", "c"])
 
 def periodic_saver():
     while True:
@@ -61,7 +57,7 @@ def monitor_attract_stdout():
     )
 
     for line in process.stdout:
-        print(f"[Attract] {line.strip()}")  # Optional live log
+        """print(f"[Attract] {line.strip()}")""" # Optional live log, commented out
 
         if "*** Running:" in line and "mame" in line:
             print("🎮 MAME launched")
@@ -109,7 +105,7 @@ def payment_processor():
     time.sleep(2)
     with credits_lock:
         credits += num_credits
-    save_credits()
+        save_credits()
     print(f"Payment received (test mode)! Awarding {num_credits} credits!")
     return
     # ---------------------------
@@ -133,32 +129,33 @@ def payment_processor():
 
 # Key watcher daemon
 from gamepad import VirtualGamepad  # Assuming the class above is saved in gamepad.py
-
+from pynput import keyboard as pynput_keyboard
 gamepad = VirtualGamepad()
 
 def key_watcher():
-    global credits
-    print("Key watcher running.")
+
+    def on_press(key):
+        global credits
+        try:
+            if key.char == INSERT_BUTTON:
+                with credits_lock:
+                    if credits > 0:
+                        credits -= 1
+                        current_credits = credits
+                        gamepad.insert_coin()
+                        save_credits()
+                        print(f"Inserted coin! Remaining credits: {current_credits}")
+                    else:
+                        print("No credits. Launching payment processor...")
+                        threading.Thread(target=payment_processor, daemon=True).start()
+        except AttributeError:
+            pass
+
+    listener = pynput_keyboard.Listener(on_press=on_press)
+    listener.start()
 
     while True:
-        if keyboard.is_pressed(INSERT_BUTTON):
-            with credits_lock:
-                if credits > 0:
-                    credits -= 1
-                    current_credits = credits
-                    should_insert_coin = True
-                else:
-                    should_insert_coin = False
-
-            if should_insert_coin:
-                gamepad.insert_coin()
-                save_credits()
-                print(f"Inserted coin! Remaining credits: {current_credits}")
-            else:
-                print("No credits left! Insert payment.")
-            time.sleep(0.5)
-
-        time.sleep(0.05)
+        time.sleep(0.1)  # keep thread alive
 
 def main():
     global credits
@@ -171,20 +168,10 @@ def main():
     threading.Thread(target=periodic_saver, daemon=True).start()
     threading.Thread(target=key_watcher, daemon=True).start()
 
-    # Main loop: wait for "v" when credits == 0
+    # Main loop
     while True:
         with credits_lock:
             current_credits = credits
-
-        if current_credits == 0:
-            print("No credits left. Waiting for player to press V to begin payment...")
-
-            # Wait until V is pressed
-            while not keyboard.is_pressed(INSERT_BUTTON):
-                time.sleep(0.1)
-
-            # Player pressed V → begin payment processor
-            payment_processor()
 
         time.sleep(1)
 
