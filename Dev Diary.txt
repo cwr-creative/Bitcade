@@ -1,0 +1,2 @@
+Dev Diary
+    Got the window focus switching 80% figured out. Currently unable to switch to attract mode. I wonder if I should simplify GPTs attract_or_mame_focus function and simply check the is-mame-running boolean, then switch/pause accordingly.

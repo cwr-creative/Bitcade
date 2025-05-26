@@ -12,7 +12,7 @@ from bitcoinlib.keys import HDKey
 XPUB_KEY = "vpub5VHC6VtRuxj8PFkaYsNHXx56tVZHqQiPoiPxGfzuGAj2HFH6eFeAqPT99FsR5Hn11vCGVDQyz6hXeMTGRnMuxnhPCeR1jHaAH3phymriHyp"
 CREDIT_COST_USD = 0.50
 EXCHANGE_RATE_API = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
-TIMEOUT_SECONDS = 200
+PAYMENT_TIMEOUT = 200
 CREDITS_FILE = "credits.json"
 INSERT_BUTTON = "v"
 SAVE_INTERVAL = 10  # seconds between saving credits.json
@@ -50,10 +50,11 @@ def monitor_attract_stdout():
     print("🧠 Starting Attract Mode monitor...")
 
     process = subprocess.Popen(
-        ["attract"],
+        ["attract", "--loglevel", "debug"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True
+        text=True,
+        bufsize=1
     )
 
     for line in process.stdout:
@@ -63,7 +64,7 @@ def monitor_attract_stdout():
             print("🎮 MAME launched")
             mame_is_running = True
 
-        elif "exit_game" in line or "Returned from" in line:
+        elif "Created Attract-Mode Window" in line:
             print("🏁 MAME exited")
             mame_is_running = False
 
@@ -88,26 +89,30 @@ def generate_payment_qr(amount_btc, address):
 
 def payment_processor():
     global credits
-
     btc_address = derive_address_from_xpub(XPUB_KEY)
-
     btc_price = get_btc_price()
     cost_per_credit_btc = CREDIT_COST_USD / btc_price
     num_credits = int(input("Enter the number of credits to purchase: "))
     total_btc = cost_per_credit_btc * num_credits
-
     print(f"Total cost in BTC: {total_btc:.8f}")
     print("Generating payment QR code...")
     generate_payment_qr(total_btc, btc_address)
 
     # ----- Test mode block -----
-    print("Test mode: Simulating payment received immediately!")
-    time.sleep(2)
-    with credits_lock:
-        credits += num_credits
-        save_credits()
-    print(f"Payment received (test mode)! Awarding {num_credits} credits!")
-    return
+    start_time = time.time()
+    while time.time() - start_time < PAYMENT_TIMEOUT:
+        if num_credits > 0:
+            time.sleep(2)
+            print("Test mode: Simulating payment received immediately!")
+            with credits_lock:
+                credits += num_credits
+                save_credits()
+                print(f"Payment received (test mode)! Awarding {num_credits} credits!")
+                focus_attract_or_mame()
+                gamepad.toggle_pause()
+            return
+    print("Test mode: Payment not detected. Returning to Attract Mode.")
+
     # ---------------------------
 
     # Real mempool watch code is still here (commented for now)
@@ -115,20 +120,67 @@ def payment_processor():
     start_time = time.time()
     MEMPOOL_API = f"https://mempool.space/testnet4/api/address/{btc_address}/txs/mempool"
 
-    while time.time() - start_time < TIMEOUT_SECONDS:
+    while time.time() - start_time < PAYMENT_TIMEOUT:
         received_btc = check_for_payment(btc_address)
         if received_btc and received_btc >= total_btc:
             with credits_lock:
                 credits += num_credits
             save_credits()
+            focus_attract_or_mame()
             return
         time.sleep(2)
 
     print("Payment not detected. Returning to Attract Mode.")
+    focus_attract_or_mame()
     """
+# Pausing MAME and switching window focus
+
+def pause_mame():
+    try:
+        subprocess.run(["xdotool", "search", "--name", "MAME", "windowactivate", "--sync"])
+        time.sleep(1)
+        gamepad.toggle_pause()
+        print("Cycled MAME pause")
+    except Exception as e:
+        print(f"[Error] Failed to pause MAME: {e}")
+
+def get_terminal_window_id():
+    # Grabs the active terminal window (assumes you're running in gnome-terminal or similar)
+    result = subprocess.run(
+        ["xdotool", "search", "--class", "gnome-terminal"],
+        capture_output=True,
+        text=True
+    )
+    window_ids = result.stdout.strip().split("\n")
+    return window_ids[-1]  # Last match is usually the one you launched from
+
+def focus_attract_or_mame():
+    try:
+        # Try MAME first
+        mame_window = subprocess.run(
+            ["xdotool", "search", "--name", "MAME"],
+            capture_output=True, text=True
+        )
+        if mame_window.stdout.strip():
+            subprocess.run(["xdotool", "windowactivate", mame_window.stdout.strip()])
+            time.sleep(1)  # Give it a moment to focus
+            print("🔁 Focus returned to MAME")
+            return
+
+        # Fallback to Attract Mode
+        attract_window = subprocess.run(
+            ["xdotool", "search", "--name", "Attract Mode"],
+            capture_output=True, text=True
+        )
+        if attract_window.stdout.strip():
+            subprocess.run(["xdotool", "windowactivate", attract_window.stdout.strip()])
+            time.sleep(1)  # Give it a moment to focus
+            print("🔁 Focus returned to Attract Mode")
+    except Exception as e:
+        print(f"[Error] Could not refocus frontend: {e}")
 
 # Key watcher daemon
-from gamepad import VirtualGamepad  # Assuming the class above is saved in gamepad.py
+from gamepad import VirtualGamepad  # Saved in gamepad.py
 from pynput import keyboard as pynput_keyboard
 gamepad = VirtualGamepad()
 
@@ -139,15 +191,25 @@ def key_watcher():
         try:
             if key.char == INSERT_BUTTON:
                 with credits_lock:
-                    if credits > 0:
-                        credits -= 1
-                        current_credits = credits
-                        gamepad.insert_coin()
-                        save_credits()
-                        print(f"Inserted coin! Remaining credits: {current_credits}")
+                    if mame_is_running:
+                        if credits > 0:
+                            credits -= 1
+                            current_credits = credits
+                            gamepad.insert_coin()
+                            save_credits()
+                            print(f"Inserted coin! Remaining credits: {current_credits}")
+                        else:
+                            print("No credits. Launching payment processor...")
+                            gamepad.toggle_pause()  # Pause MAME
+                            # Switch focus to terminal (or payment window)
+                            try:
+                                subprocess.run(["xdotool", "windowactivate", "--sync", str(get_terminal_window_id())])
+                                print("🔄 Focused terminal for payment")
+                            except Exception as e:
+                                print(f"[Error] Could not focus terminal: {e}")
+                            threading.Thread(target=payment_processor, daemon=True).start()
                     else:
-                        print("No credits. Launching payment processor...")
-                        threading.Thread(target=payment_processor, daemon=True).start()
+                        print("MAME is not running. Cannot insert coin.")
         except AttributeError:
             pass
 
