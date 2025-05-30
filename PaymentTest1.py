@@ -7,19 +7,29 @@ import threading
 from pynput.keyboard import Controller
 import os
 from bitcoinlib.keys import HDKey
+from pathlib import Path
 
 # Configuration
 XPUB_KEY = "vpub5VHC6VtRuxj8PFkaYsNHXx56tVZHqQiPoiPxGfzuGAj2HFH6eFeAqPT99FsR5Hn11vCGVDQyz6hXeMTGRnMuxnhPCeR1jHaAH3phymriHyp"
 CREDIT_COST_USD = 0.50
 EXCHANGE_RATE_API = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
 PAYMENT_TIMEOUT = 200
-CREDITS_FILE = "credits.json"
+root_dir = Path(__file__).resolve()
+CREDITS_FILE = Path(__file__).resolve().parent / "credits.json"
 INSERT_BUTTON = "v"
 SAVE_INTERVAL = 10  # seconds between saving credits.json
 
 credits_lock = threading.RLock()
 credits = 0
 keyboard_controller = Controller()
+
+#UI and multiprocessing setup
+from multiprocessing import Process, Queue
+from bitcadeUI import run_overlay  # assuming correct import path
+
+ui_queue = Queue()
+ui_process = Process(target=run_overlay, args=(ui_queue,))
+ui_process.start()
 
 # Load/save credits
 def load_credits():
@@ -195,8 +205,10 @@ def key_watcher():
                         if credits > 0:
                             credits -= 1
                             current_credits = credits
+                            previous_credits = current_credits + 1
                             gamepad.insert_coin()
                             save_credits()
+                            ui_queue.put(("show_credits", (previous_credits, current_credits)))
                             print(f"Inserted coin! Remaining credits: {current_credits}")
                         else:
                             print("No credits. Launching payment processor...")
